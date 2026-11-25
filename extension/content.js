@@ -177,7 +177,7 @@
     $("#status").textContent=`Answer ready · ${qs.length} question${qs.length===1?"":"s"}`; $("#dot").classList.remove("spin"); $("#err").classList.add("hidden"); $("#retry").classList.add("hidden"); $("#again").disabled=false; busy=false;
   }
   async function requestScan(screenshot) {
-    ensurePanel(); if (settingsOpen) void toggleSettings(false); panelHidden=false; host.style.display="block"; if(busy)return; busy=true; minimized=false; $(".panel").classList.remove("collapsed"); $("#min").textContent="−"; $("#again").disabled=true;
+    ensurePanel(); if (settingsOpen) void toggleSettings(false); panelHidden=false; host.style.display="block"; if(busy)return; busy=true; minimized=false; $(".panel").classList.remove("collapsed"); $("#min").textContent="−"; $("#again").disabled=true; $("#results").replaceChildren();
     try {
       if(!screenshot) { setStatus("Capturing visible page…",true); const response=await chrome.runtime.sendMessage({type:"AUTOSCAN_RECAPTURE"}); screenshot=response?.screenshot; if(!screenshot)throw new Error(response?.error||"Could not capture the page. Use Alt+X while the target tab is active."); }
       setStatus("Extracting text locally…",true);
