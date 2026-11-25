@@ -267,9 +267,23 @@ app.post("/api/autoscan", async (req, res) => {
       }));
     };
 
+    const baseRules = [
+      "You are Ask Gemini AutoScan, a careful study assistant.",
+      "Use only visible questions, answer options, and ordering steps; ignore navigation, ads, unrelated paragraphs, browser UI, and page boilerplate.",
+      "Preserve the original question order. If firstOnly is true, return only the first question.",
+      "Do not guess missing or unreadable text; say when something is unclear.",
+      "Question-type formatting rules for `answer`:",
+      "- Single-choice MCQ: give the correct option letter/number and its text.",
+      "- Multi-select ('Select all that apply' / checkboxes): list ALL correct options clearly (one per line).",
+      "- Ordering / Arrange / Drag-and-Drop steps: return the COMPLETE ordered sequence from step 1 to the last step (numbered 1, 2, 3...) with the exact step text.",
+      "- Short answer / fill-in-the-blank: give the exact concise answer.",
+      "For each question provide `question`, `options` (array of strings), `answer` (string), and `explanation` (brief).",
+      'Return valid JSON only, matching this exact schema: {"questions":[{"question":"...","options":["..."],"answer":"...","explanation":"..."}]}. If no question is detected, return {"questions":[]}.'
+    ].join(" ");
+
     let questions = [];
     if (isVercel) {
-      const cloudPrompt = `You are Ask Gemini AutoScan, a careful study assistant. Read the visible questions, answer options, and any diagrams, trees, charts, graphs, or images from the supplied webpage screenshot and accessible webpage text. Use only questions and nearby answer options; ignore navigation, ads, unrelated paragraphs, browser UI, and page boilerplate. Preserve the original question order. If firstOnly is true, return only the first question. Do not guess unreadable text; say when something is unclear. For each question provide question, options (array of strings), answer, and explanation (brief). For multiple choice, identify the option letter/number and its text when available. Return valid JSON only, exactly this schema: {"questions":[{"question":"...","options":["A. ..."],"answer":"...","explanation":"..."}]}. If no question is detected, return {"questions":[]}.\nfirstOnly: ${Boolean(req.body?.firstOnly)}\nACCESSIBLE_DOM_TEXT (supporting text; use the screenshot for diagrams, figures, and visual layout):\n${domText}`;
+      const cloudPrompt = `${baseRules}\nRead the visible questions, options, ordering steps, and any diagrams, trees, charts, or figures from the screenshot and accessible webpage text.\nfirstOnly: ${Boolean(req.body?.firstOnly)}\nACCESSIBLE_DOM_TEXT (supporting text; use the screenshot for diagrams, figures, and visual layout):\n${domText}`;
       const result = await generateWithFallback({
         contents: [{
           role: "user",
@@ -282,7 +296,7 @@ app.post("/api/autoscan", async (req, res) => {
       });
       questions = parseQuestions(result);
     } else if (ocrText || domText) {
-      const textPrompt = `You are Ask Gemini AutoScan, a careful study assistant. Extract the visible questions from the supplied OCR and optional accessible webpage text. Use only questions and nearby answer options; ignore navigation, ads, unrelated paragraphs, and page boilerplate. Preserve the original question order. If the user asks for firstOnly, return only the first question. Do not guess missing or unreadable text; say when something is unclear. For each question provide question, options (array of strings), answer, and explanation (brief). For multiple choice, identify the option letter and its text when available. Return valid JSON only, exactly this schema: {"questions":[{"question":"...","options":["A. ..."],"answer":"...","explanation":"..."}]}. If no question is detected, return {"questions":[]}.\nfirstOnly: ${Boolean(req.body?.firstOnly)}\nOCR_TEXT:\n${ocrText}\nACCESSIBLE_DOM_TEXT (secondary evidence; prefer visible question context):\n${domText}`;
+      const textPrompt = `${baseRules}\nExtract the visible questions from the supplied OCR and optional accessible webpage text.\nfirstOnly: ${Boolean(req.body?.firstOnly)}\nOCR_TEXT:\n${ocrText}\nACCESSIBLE_DOM_TEXT (secondary evidence; prefer visible question context):\n${domText}`;
       const result = await generateWithFallback({
         contents: [{ role: "user", parts: [{ text: textPrompt }] }],
         generationConfig: { responseMimeType: "application/json", temperature: 0.2 }

@@ -190,7 +190,21 @@
     } catch(e) { showError(e.name==="AbortError"?"Request timed out after 90 seconds. Check the server and retry.":(e.message.includes("Failed to fetch")?`Cannot reach backend at ${currentServer}. Check Server Settings or start the local server, then retry.`:e.message||"Unexpected scan error.")); }
   }
   function extractRelevantDomText() {
-    try { const nodes=[...document.querySelectorAll("h1,h2,h3,p,label,li,[role=question],.question,[class*=question i],input[type=radio],input[type=checkbox]")]; return nodes.map(n=>{if(n.matches("input"))return n.labels?.[0]?.innerText||n.getAttribute("aria-label")||"";return n.innerText||n.textContent||"";}).map(s=>s.trim()).filter(s=>s.length>2&&s.length<1200).slice(0,100).join("\n").slice(0,12000); } catch{return "";}
+    try {
+      const nodes = [...document.querySelectorAll("h1,h2,h3,p,label,li,[role=question],[role=option],[role=listitem],[role=checkbox],[role=radio],[draggable=true],[data-rbd-draggable-id],.question,[class*=question i],[class*=option i],[class*=choice i],[class*=step i],[class*=prompt i],[class*=statement i],input[type=radio],input[type=checkbox]")];
+      const seen = new Set();
+      const lines = [];
+      for (const n of nodes) {
+        if (n.closest("#ask-gemini-autoscan-host")) continue;
+        const text = (n.matches("input") ? (n.labels?.[0]?.innerText || n.getAttribute("aria-label") || "") : (n.innerText || n.textContent || "")).trim();
+        if (text.length > 1 && text.length < 1200 && !seen.has(text)) {
+          seen.add(text);
+          lines.push(text);
+          if (lines.length >= 120) break;
+        }
+      }
+      return lines.join("\n").slice(0, 12000);
+    } catch { return ""; }
   }
   chrome.runtime.onMessage.addListener((msg) => {
     if(msg?.type==="AUTOSCAN_START"){ currentServer=msg.server||currentServer; void requestScan(msg.screenshot); }
