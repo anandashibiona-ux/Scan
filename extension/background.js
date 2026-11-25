@@ -71,7 +71,8 @@ async function startScan() {
     if (runningTabs.has(tab.id)) return;
     runningTabs.add(tab.id);
 
-    // Capture first while the target tab is still active; JPEG keeps cloud uploads fast.
+    // Hide any existing AutoScan overlay before capturing so it never obscures the question.
+    await chrome.tabs.sendMessage(tab.id, { type: "AUTOSCAN_HIDE_FOR_CAPTURE" }).catch(() => {});
     const screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "jpeg", quality: 85 });
     try {
       await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"] });

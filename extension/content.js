@@ -165,7 +165,7 @@
   }
 
   function setStatus(s, loading=false) { ensurePanel(); $("#status").textContent=s; $("#dot").classList.toggle("spin",loading); $("#err").classList.add("hidden"); $("#retry").classList.add("hidden"); }
-  function showError(message) { ensurePanel(); busy=false; $("#status").textContent="Scan failed"; $("#dot").classList.remove("spin"); $("#err").textContent=message; $("#err").classList.remove("hidden"); $("#retry").classList.remove("hidden"); $("#again").disabled=false; }
+  function showError(message) { ensurePanel(); panelHidden=false; host.style.display="block"; busy=false; $("#status").textContent="Scan failed"; $("#dot").classList.remove("spin"); $("#err").textContent=message; $("#err").classList.remove("hidden"); $("#retry").classList.remove("hidden"); $("#again").disabled=false; }
   function el(tag, cls, text) { const n=document.createElement(tag); if(cls)n.className=cls; if(text!==undefined)n.textContent=text; return n; }
   function render(data) {
     const root=$("#results"); root.replaceChildren();
@@ -176,10 +176,26 @@
     });
     $("#status").textContent=`Answer ready · ${qs.length} question${qs.length===1?"":"s"}`; $("#dot").classList.remove("spin"); $("#err").classList.add("hidden"); $("#retry").classList.add("hidden"); $("#again").disabled=false; busy=false;
   }
+  function waitForPaint() {
+    return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  }
+
   async function requestScan(screenshot) {
     ensurePanel(); if (settingsOpen) void toggleSettings(false); panelHidden=false; host.style.display="block"; if(busy)return; busy=true; minimized=false; $(".panel").classList.remove("collapsed"); $("#min").textContent="−"; $("#again").disabled=true; $("#results").replaceChildren();
     try {
-      if(!screenshot) { setStatus("Capturing visible page…",true); const response=await chrome.runtime.sendMessage({type:"AUTOSCAN_RECAPTURE"}); screenshot=response?.screenshot; if(!screenshot)throw new Error(response?.error||"Could not capture the page. Use Alt+X while the target tab is active."); }
+      if(!screenshot) {
+        setStatus("Capturing visible page…",true);
+        host.style.display="none";
+        await waitForPaint();
+        let response;
+        try {
+          response=await chrome.runtime.sendMessage({type:"AUTOSCAN_RECAPTURE"});
+        } finally {
+          if(host?.isConnected && !panelHidden) host.style.display="block";
+        }
+        screenshot=response?.screenshot;
+        if(!screenshot)throw new Error(response?.error||"Could not capture the page. Use Alt+X while the target tab is active.");
+      }
       setStatus("Extracting text locally…",true);
       const domText=extractRelevantDomText();
       setStatus("Identifying questions…",true);
@@ -206,7 +222,8 @@
       return lines.join("\n").slice(0, 12000);
     } catch { return ""; }
   }
-  chrome.runtime.onMessage.addListener((msg) => {
+  chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    if(msg?.type==="AUTOSCAN_HIDE_FOR_CAPTURE"){ if(host?.isConnected){ host.style.display="none"; waitForPaint().then(()=>sendResponse({ok:true})); return true; } sendResponse({ok:true}); }
     if(msg?.type==="AUTOSCAN_START"){ currentServer=msg.server||currentServer; void requestScan(msg.screenshot); }
     if(msg?.type==="AUTOSCAN_TOGGLE_VISIBILITY") togglePanelVisibility();
     if(msg?.type==="AUTOSCAN_ERROR")showError(msg.error||"Unable to start scan on this page.");
