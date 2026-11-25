@@ -59,3 +59,12 @@ Upgrade of the existing Ask Gemini Screen Scanner. The keyboard shortcut `Ctrl+S
 
 - **Alt + X**: Start scanning the visible webpage and request Gemini analysis.
 - **Ctrl + Shift + Q**: Toggle detected question and multiple-choice option visibility (hide/show). This shortcut does not start a scan.
+
+## Deploy backend to Vercel
+
+1. Import the GitHub repository (`AUTO-scane`) in the Vercel Dashboard (either keep the repository root or set **Root Directory** to `server`).
+2. Add Environment Variables in Vercel Project Settings:
+   - `GEMINI_API_KEY`: your Gemini API key
+   - `GEMINI_MODEL`: `gemini-3.6-flash`
+3. Deploy and verify `https://<your-app>.vercel.app/health` returns `{ "ok": true, ... }`.
+4. Open the extension overlay, click **⚙ Server Settings**, enter `https://<your-app>.vercel.app`, click **Test**, and click **Save Settings**.

@@ -12,11 +12,12 @@ const envPath = path.join(__dirname, ".env");
 dotenv.config({ path: envPath });
 
 const app = express();
+const isVercel = Boolean(process.env.VERCEL);
 const port = Number(process.env.PORT || 3037);
 let currentApiKey = (process.env.GEMINI_API_KEY || "").trim();
 let currentModelName = (process.env.GEMINI_MODEL || "gemini-3.6-flash").trim();
 
-if (!currentApiKey || currentApiKey.includes("PASTE_YOUR")) {
+if ((!currentApiKey || currentApiKey.includes("PASTE_YOUR")) && !isVercel) {
   console.error("Missing GEMINI_API_KEY. Copy .env.example to .env and add your key.");
   process.exit(1);
 }
@@ -31,7 +32,13 @@ app.use(cors({
 }));
 app.use(express.json({ limit: "10mb" }));
 
-let genAI = new GoogleGenerativeAI(currentApiKey);
+let genAI = currentApiKey && !currentApiKey.includes("PASTE_YOUR") ? new GoogleGenerativeAI(currentApiKey) : null;
+const ocrOptions = isVercel ? { cachePath: "/tmp", dataPath: "/tmp" } : { cachePath: __dirname };
+
+async function runOcr(imageBuffer) {
+  const { data } = await Tesseract.recognize(imageBuffer, "eng", ocrOptions);
+  return (data.text || "").trim();
+}
 const DEFAULT_FALLBACK_MODELS = [
   "gemini-3.6-flash",
   "gemini-3.8-flash",
@@ -66,6 +73,9 @@ function persistEnvUpdates(updates) {
 }
 
 async function generateWithFallback(request) {
+  if (!genAI) {
+    throw new Error("Missing GEMINI_API_KEY in server environment variables.");
+  }
   let lastError;
   for (const candidate of getCandidateModels()) {
     try {
@@ -82,10 +92,19 @@ async function generateWithFallback(request) {
   throw lastError;
 }
 
-app.get("/health", (_req, res) => res.json({
+app.get("/", (_req, res) => res.json({
   ok: true,
+  service: "ask-gemini-scan-server",
   model: currentModelName,
-  hasApiKey: Boolean(currentApiKey)
+  hasApiKey: Boolean(currentApiKey),
+  health: "/health"
+}));
+
+app.get("/health", (_req, res) => res.json({
+  ok: Boolean(currentApiKey),
+  model: currentModelName,
+  hasApiKey: Boolean(currentApiKey),
+  supportsSettingsApi: !isVercel
 }));
 
 app.get("/api/settings", (_req, res) => {
@@ -94,11 +113,15 @@ app.get("/api/settings", (_req, res) => {
     model: currentModelName,
     hasApiKey: Boolean(currentApiKey),
     apiKeyPreview: maskApiKey(currentApiKey),
-    availableModels: getCandidateModels()
+    availableModels: getCandidateModels(),
+    supportsSettingsApi: !isVercel
   });
 });
 
 app.post("/api/settings", (req, res) => {
+  if (isVercel) {
+    return res.status(403).json({ error: "Settings are managed via Vercel Environment Variables on cloud deployments." });
+  }
   try {
     const nextModel = typeof req.body?.model === "string" ? req.body.model.trim() : "";
     const nextApiKey = typeof req.body?.apiKey === "string" ? req.body.apiKey.trim() : "";
@@ -154,8 +177,7 @@ app.post("/api/scan", async (req, res) => {
     }
 
     // OCR runs locally on this computer using Tesseract.js (English language data).
-    const { data } = await Tesseract.recognize(imageBuffer, "eng");
-    const extractedText = (data.text || "").trim();
+    const extractedText = await runOcr(imageBuffer);
     if (!extractedText) {
       return res.status(422).json({
         error: "OCR could not read text in this region. Try selecting a larger, sharper area."
@@ -196,9 +218,8 @@ app.post("/api/autoscan", async (req, res) => {
     const imageBuffer = Buffer.from(match[2], "base64");
     if (imageBuffer.length > 6 * 1024 * 1024) return res.status(413).json({ error: "Screenshot is too large. Zoom out or reduce the browser window size, then retry." });
 
-    // Tesseract OCR runs on this machine. The screenshot is never sent to Gemini.
-    const { data } = await Tesseract.recognize(imageBuffer, "eng");
-    const ocrText = (data.text || "").trim().slice(0, 14000);
+    // Tesseract OCR runs on the server without sending the screenshot to Gemini.
+    const ocrText = (await runOcr(imageBuffer)).slice(0, 14000);
     const domText = typeof req.body?.domText === "string" ? req.body.domText.slice(0, 12000).trim() : "";
     if (!ocrText && !domText) return res.status(422).json({ error: "No readable text found. Make the question larger and clearer, then scan again." });
 
@@ -233,7 +254,11 @@ app.post("/api/autoscan", async (req, res) => {
   }
 });
 
-app.listen(port, "127.0.0.1", () => {
-  console.log(`Ask Gemini local server listening at http://127.0.0.1:${port}`);
-  console.log("OCR is processed locally; only extracted text and nearby accessible question text are sent to Gemini.");
-});
+if (!isVercel) {
+  app.listen(port, "127.0.0.1", () => {
+    console.log(`Ask Gemini local server listening at http://127.0.0.1:${port}`);
+    console.log("OCR is processed locally; only extracted text and nearby accessible question text are sent to Gemini.");
+  });
+}
+
+export default app;
