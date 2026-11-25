@@ -80,52 +80,63 @@ function persistEnvUpdates(updates) {
   fs.writeFileSync(envPath, normalized, "utf8");
 }
 
+async function raceModels(candidates, request) {
+  const controller = new AbortController();
+  try {
+    return await Promise.any(
+      candidates.map(async (candidate) => {
+        try {
+          const candidateModel = genAI.getGenerativeModel({ model: candidate });
+          return await candidateModel.generateContent(request, {
+            timeout: MODEL_TIMEOUT_MS,
+            signal: controller.signal
+          });
+        } catch (error) {
+          if (!controller.signal.aborted) {
+            console.warn(`Model ${candidate} failed (${String(error?.message || "").split("\n")[0]})`);
+          }
+          throw error;
+        }
+      })
+    );
+  } catch (aggregateError) {
+    const errors = Array.isArray(aggregateError?.errors) ? aggregateError.errors : [aggregateError];
+    const fatalError = errors.find(err => !isRetryableModelError(err));
+    if (fatalError) throw fatalError;
+    throw errors[0] || aggregateError;
+  } finally {
+    controller.abort();
+  }
+}
+
 async function generateWithFallback(request) {
   if (!genAI) {
     throw new Error("Missing GEMINI_API_KEY in server environment variables.");
   }
   const candidates = getCandidateModels();
-  const raceCandidates = candidates.slice(0, FAST_RACE_COUNT);
-  const fallbackCandidates = candidates.slice(FAST_RACE_COUNT);
+  const wave1 = candidates.slice(0, FAST_RACE_COUNT);
+  const wave2 = candidates.slice(FAST_RACE_COUNT);
 
   let lastError;
-  if (raceCandidates.length > 0) {
-    const controller = new AbortController();
-    try {
-      return await Promise.any(
-        raceCandidates.map(async (candidate) => {
-          try {
-            const candidateModel = genAI.getGenerativeModel({ model: candidate });
-            return await candidateModel.generateContent(request, {
-              timeout: MODEL_TIMEOUT_MS,
-              signal: controller.signal
-            });
-          } catch (error) {
-            if (!controller.signal.aborted) {
-              console.warn(`Model ${candidate} failed (${String(error?.message || "").split("\n")[0]})`);
-            }
-            throw error;
-          }
-        })
-      );
-    } catch (aggregateError) {
-      const errors = Array.isArray(aggregateError?.errors) ? aggregateError.errors : [aggregateError];
-      const fatalError = errors.find(err => !isRetryableModelError(err));
-      if (fatalError) throw fatalError;
-      lastError = errors[0] || aggregateError;
-    } finally {
-      controller.abort();
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt > 0) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
     }
-  }
-
-  for (const candidate of fallbackCandidates) {
-    try {
-      const candidateModel = genAI.getGenerativeModel({ model: candidate });
-      return await candidateModel.generateContent(request, { timeout: MODEL_TIMEOUT_MS });
-    } catch (error) {
-      lastError = error;
-      if (!isRetryableModelError(error)) throw error;
-      console.warn(`Model ${candidate} unavailable (${String(error?.message || "").split("\n")[0]}), trying fallback...`);
+    if (wave1.length > 0) {
+      try {
+        return await raceModels(wave1, request);
+      } catch (error) {
+        lastError = error;
+        if (!isRetryableModelError(error)) throw error;
+      }
+    }
+    if (wave2.length > 0 && attempt === 0) {
+      try {
+        return await raceModels(wave2, request);
+      } catch (error) {
+        lastError = error;
+        if (!isRetryableModelError(error)) throw error;
+      }
     }
   }
   throw lastError;
@@ -284,16 +295,22 @@ app.post("/api/autoscan", async (req, res) => {
 
     const parseQuestions = (result) => {
       let parsed;
+      const raw = result.response.text().trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
       try {
-        const raw = result.response.text().trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
         parsed = JSON.parse(raw);
       } catch {
-        const err = new Error("Gemini returned an unreadable answer. Press Retry to try again.");
-        err.statusCode = 502;
-        throw err;
+        const start = raw.indexOf("{");
+        const end = raw.lastIndexOf("}");
+        if (start >= 0 && end > start) {
+          try {
+            parsed = JSON.parse(raw.slice(start, end + 1));
+          } catch {
+            parsed = null;
+          }
+        }
       }
-      if (!Array.isArray(parsed.questions)) {
-        const err = new Error("Gemini response did not contain a questions list. Retry the scan.");
+      if (!parsed || !Array.isArray(parsed.questions)) {
+        const err = new Error("Gemini returned an unreadable answer. Press Retry to try again.");
         err.statusCode = 502;
         throw err;
       }
@@ -303,6 +320,17 @@ app.post("/api/autoscan", async (req, res) => {
         answer: String(q?.answer || "No reliable answer returned.").slice(0, 4000),
         explanation: String(q?.explanation || "").slice(0, 4000)
       }));
+    };
+
+    const generateParsedQuestions = async (request) => {
+      try {
+        return parseQuestions(await generateWithFallback(request));
+      } catch (err) {
+        if (err?.statusCode === 502) {
+          return parseQuestions(await generateWithFallback(request));
+        }
+        throw err;
+      }
     };
 
     const baseRules = [
@@ -322,7 +350,7 @@ app.post("/api/autoscan", async (req, res) => {
     let questions = [];
     if (isVercel) {
       const cloudPrompt = `${baseRules}\nRead the visible questions, options, ordering steps, and any diagrams, trees, charts, or figures from the screenshot and accessible webpage text.\nfirstOnly: ${Boolean(req.body?.firstOnly)}\nACCESSIBLE_DOM_TEXT (supporting text; use the screenshot for diagrams, figures, and visual layout):\n${domText}`;
-      const result = await generateWithFallback({
+      questions = await generateParsedQuestions({
         contents: [{
           role: "user",
           parts: [
@@ -332,14 +360,12 @@ app.post("/api/autoscan", async (req, res) => {
         }],
         generationConfig: { responseMimeType: "application/json", temperature: 0.2 }
       });
-      questions = parseQuestions(result);
     } else if (ocrText || domText) {
       const textPrompt = `${baseRules}\nExtract the visible questions from the supplied OCR and optional accessible webpage text.\nfirstOnly: ${Boolean(req.body?.firstOnly)}\nOCR_TEXT:\n${ocrText}\nACCESSIBLE_DOM_TEXT (secondary evidence; prefer visible question context):\n${domText}`;
-      const result = await generateWithFallback({
+      questions = await generateParsedQuestions({
         contents: [{ role: "user", parts: [{ text: textPrompt }] }],
         generationConfig: { responseMimeType: "application/json", temperature: 0.2 }
       });
-      questions = parseQuestions(result);
     }
 
     if (!questions.length) return res.status(422).json({ error: "Text was detected, but no question could be identified. Scroll the question fully into view and retry." });

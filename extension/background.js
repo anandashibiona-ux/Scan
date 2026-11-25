@@ -122,9 +122,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ ok: true, result });
       } catch (e) {
         const msg = e?.name === "TimeoutError" || e?.name === "AbortError"
-          ? "Request timed out. Check the local server and retry."
-          : (e?.message || `Cannot reach local backend at ${serverUrl}. Start it with node server.js.`);
-        sendResponse({ ok: false, error: msg.includes("fetch") ? `Cannot reach the local backend at ${serverUrl}. Start the server in the server folder.` : msg });
+          ? "Request timed out. Check the backend server and retry."
+          : (e?.message || `Cannot reach backend at ${serverUrl}. Check Server Settings.`);
+        sendResponse({ ok: false, error: msg.includes("fetch") ? `Cannot reach the backend at ${serverUrl}. Check Server Settings or your internet connection.` : msg });
       }
     })();
     return true;
