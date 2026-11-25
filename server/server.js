@@ -335,21 +335,22 @@ app.post("/api/autoscan", async (req, res) => {
 
     const baseRules = [
       "You are Ask Gemini AutoScan, a careful study assistant.",
-      "Use only visible questions, answer options, and ordering steps; ignore navigation, ads, unrelated paragraphs, browser UI, and page boilerplate.",
+      "Use only visible questions, answer options, ordering steps, and any visible code editors or reference panes on screen; ignore navigation, ads, unrelated paragraphs, browser UI, and page boilerplate.",
       "Preserve the original question order. If firstOnly is true, return only the first question.",
       "Do not guess missing or unreadable text; say when something is unclear.",
+      "In `explanation`, trace operations, arithmetic, code execution, or math step-by-step carefully BEFORE writing `answer`, and double-check counts and signs.",
       "Question-type formatting rules for `answer`:",
       "- Single-choice MCQ: give the correct option letter/number and its text.",
       "- Multi-select ('Select all that apply' / checkboxes): list ALL correct options clearly (one per line).",
       "- Ordering / Arrange / Drag-and-Drop steps: return the COMPLETE ordered sequence from step 1 to the last step (numbered 1, 2, 3...) with the exact step text.",
       "- Short answer / fill-in-the-blank: give the exact concise answer.",
-      "For each question provide `question`, `options` (array of strings), `answer` (string), and `explanation` (brief).",
-      'Return valid JSON only, matching this exact schema: {"questions":[{"question":"...","options":["..."],"answer":"...","explanation":"..."}]}. If no question is detected, return {"questions":[]}.'
+      "For each question provide `question`, `options` (array of strings), `explanation` (brief step-by-step verification), and `answer` (string).",
+      'Return valid JSON only, matching this exact schema: {"questions":[{"question":"...","options":["..."],"explanation":"...","answer":"..."}]}. If no question is detected, return {"questions":[]}.'
     ].join(" ");
 
     let questions = [];
     if (isVercel) {
-      const cloudPrompt = `${baseRules}\nRead the visible questions, options, ordering steps, and any diagrams, trees, charts, or figures from the screenshot and accessible webpage text.\nfirstOnly: ${Boolean(req.body?.firstOnly)}\nACCESSIBLE_DOM_TEXT (supporting text; use the screenshot for diagrams, figures, and visual layout):\n${domText}`;
+      const cloudPrompt = `${baseRules}\nRead the visible questions, options, ordering steps, and any diagrams, trees, charts, code panes, or figures from the screenshot and accessible webpage text.\nfirstOnly: ${Boolean(req.body?.firstOnly)}\nACCESSIBLE_DOM_TEXT (supporting text; use the screenshot for diagrams, figures, and visual layout):\n${domText}`;
       questions = await generateParsedQuestions({
         contents: [{
           role: "user",
@@ -358,13 +359,13 @@ app.post("/api/autoscan", async (req, res) => {
             { inlineData: { mimeType, data: match[2] } }
           ]
         }],
-        generationConfig: { responseMimeType: "application/json", temperature: 0.2 }
+        generationConfig: { responseMimeType: "application/json", temperature: 0 }
       });
     } else if (ocrText || domText) {
       const textPrompt = `${baseRules}\nExtract the visible questions from the supplied OCR and optional accessible webpage text.\nfirstOnly: ${Boolean(req.body?.firstOnly)}\nOCR_TEXT:\n${ocrText}\nACCESSIBLE_DOM_TEXT (secondary evidence; prefer visible question context):\n${domText}`;
       questions = await generateParsedQuestions({
         contents: [{ role: "user", parts: [{ text: textPrompt }] }],
-        generationConfig: { responseMimeType: "application/json", temperature: 0.2 }
+        generationConfig: { responseMimeType: "application/json", temperature: 0 }
       });
     }
 
