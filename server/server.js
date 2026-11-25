@@ -15,7 +15,7 @@ const app = express();
 const isVercel = Boolean(process.env.VERCEL);
 const port = Number(process.env.PORT || 3037);
 let currentApiKey = (process.env.GEMINI_API_KEY || "").trim();
-let currentModelName = (process.env.GEMINI_MODEL || "gemini-3.6-flash").trim();
+let currentModelName = (process.env.GEMINI_MODEL || "gemini-3.5-flash-lite").trim();
 
 if ((!currentApiKey || currentApiKey.includes("PASTE_YOUR")) && !isVercel) {
   console.error("Missing GEMINI_API_KEY. Copy .env.example to .env and add your key.");
@@ -39,13 +39,14 @@ async function runLocalOcr(imageBuffer) {
   return (data.text || "").trim();
 }
 const DEFAULT_FALLBACK_MODELS = [
+  "gemini-3.5-flash-lite",
+  "gemini-3.1-flash-lite",
   "gemini-flash-lite-latest",
   "gemini-3-flash-preview",
   "gemini-3.6-flash",
-  "gemini-flash-latest",
-  "gemini-3.7-flash",
-  "gemini-3.8-flash"
+  "gemini-flash-latest"
 ];
+const MODEL_TIMEOUT_MS = 10000;
 
 function getCandidateModels() {
   return [currentModelName, ...DEFAULT_FALLBACK_MODELS]
@@ -81,11 +82,11 @@ async function generateWithFallback(request) {
   for (const candidate of getCandidateModels()) {
     try {
       const candidateModel = genAI.getGenerativeModel({ model: candidate });
-      return await candidateModel.generateContent(request);
+      return await candidateModel.generateContent(request, { timeout: MODEL_TIMEOUT_MS });
     } catch (error) {
       lastError = error;
       const msg = String(error?.message || "");
-      const isRetryableModelError = /503|service unavailable|high demand|404|not found|no longer available|429|quota|resource exhausted|rate.?limit/i.test(msg);
+      const isRetryableModelError = /503|service unavailable|high demand|404|not found|no longer available|429|quota|resource exhausted|rate.?limit|timeout|timed out|abort|econnreset|etimedout|fetch failed/i.test(msg);
       if (!isRetryableModelError) throw error;
       console.warn(`Model ${candidate} unavailable (${msg.split("\n")[0]}), trying fallback...`);
     }
@@ -311,6 +312,7 @@ app.post("/api/autoscan", async (req, res) => {
     const message = String(error?.message || "");
     console.error("AutoScan request failed:", message);
     if (/503|service unavailable|high demand/i.test(message)) return res.status(503).json({ error: "Gemini is temporarily experiencing high demand. Press Retry in a moment." });
+    if (/timeout|timed out|abort/i.test(message)) return res.status(504).json({ error: "Gemini took too long to respond. Press Retry in a moment." });
     if (/quota|resource exhausted|429/i.test(message)) return res.status(429).json({ error: "Gemini quota is exhausted or rate-limited. Wait a little, check your Gemini usage, and retry." });
     if (/api key|unauthenticated|permission denied|401|403/i.test(message)) return res.status(502).json({ error: "Gemini rejected the API key. Check GEMINI_API_KEY in server/.env and restart the server." });
     return res.status(500).json({ error: "AutoScan failed. Check the local server terminal, internet connection, model configuration, and Gemini quota." });
