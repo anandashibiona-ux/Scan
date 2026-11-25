@@ -47,6 +47,12 @@ const DEFAULT_FALLBACK_MODELS = [
   "gemini-flash-latest"
 ];
 const MODEL_TIMEOUT_MS = 8000;
+const FAST_RACE_COUNT = 3;
+
+function isRetryableModelError(error) {
+  const msg = String(error?.message || "");
+  return /503|service unavailable|high demand|404|not found|no longer available|429|quota|resource exhausted|rate.?limit|timeout|timed out|abort|econnreset|etimedout|fetch failed/i.test(msg);
+}
 
 function getCandidateModels() {
   return [currentModelName, ...DEFAULT_FALLBACK_MODELS]
@@ -78,17 +84,48 @@ async function generateWithFallback(request) {
   if (!genAI) {
     throw new Error("Missing GEMINI_API_KEY in server environment variables.");
   }
+  const candidates = getCandidateModels();
+  const raceCandidates = candidates.slice(0, FAST_RACE_COUNT);
+  const fallbackCandidates = candidates.slice(FAST_RACE_COUNT);
+
   let lastError;
-  for (const candidate of getCandidateModels()) {
+  if (raceCandidates.length > 0) {
+    const controller = new AbortController();
+    try {
+      return await Promise.any(
+        raceCandidates.map(async (candidate) => {
+          try {
+            const candidateModel = genAI.getGenerativeModel({ model: candidate });
+            return await candidateModel.generateContent(request, {
+              timeout: MODEL_TIMEOUT_MS,
+              signal: controller.signal
+            });
+          } catch (error) {
+            if (!controller.signal.aborted) {
+              console.warn(`Model ${candidate} failed (${String(error?.message || "").split("\n")[0]})`);
+            }
+            throw error;
+          }
+        })
+      );
+    } catch (aggregateError) {
+      const errors = Array.isArray(aggregateError?.errors) ? aggregateError.errors : [aggregateError];
+      const fatalError = errors.find(err => !isRetryableModelError(err));
+      if (fatalError) throw fatalError;
+      lastError = errors[0] || aggregateError;
+    } finally {
+      controller.abort();
+    }
+  }
+
+  for (const candidate of fallbackCandidates) {
     try {
       const candidateModel = genAI.getGenerativeModel({ model: candidate });
       return await candidateModel.generateContent(request, { timeout: MODEL_TIMEOUT_MS });
     } catch (error) {
       lastError = error;
-      const msg = String(error?.message || "");
-      const isRetryableModelError = /503|service unavailable|high demand|404|not found|no longer available|429|quota|resource exhausted|rate.?limit|timeout|timed out|abort|econnreset|etimedout|fetch failed/i.test(msg);
-      if (!isRetryableModelError) throw error;
-      console.warn(`Model ${candidate} unavailable (${msg.split("\n")[0]}), trying fallback...`);
+      if (!isRetryableModelError(error)) throw error;
+      console.warn(`Model ${candidate} unavailable (${String(error?.message || "").split("\n")[0]}), trying fallback...`);
     }
   }
   throw lastError;
