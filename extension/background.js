@@ -17,11 +17,14 @@ function normalizeServerUrl(raw) {
 }
 
 async function fetchServerStatus(serverUrl) {
+  const health = await fetchJsonWithTimeout(`${serverUrl}/health`, {}, 5000);
+  if (health.supportsSettingsApi === false) {
+    return { supportsSettingsApi: false, ...health };
+  }
   try {
     const settings = await fetchJsonWithTimeout(`${serverUrl}/api/settings`, {}, 5000);
     return { supportsSettingsApi: true, ...settings };
   } catch {
-    const health = await fetchJsonWithTimeout(`${serverUrl}/health`, {}, 5000);
     return { supportsSettingsApi: false, ...health };
   }
 }

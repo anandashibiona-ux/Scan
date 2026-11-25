@@ -17,7 +17,7 @@
       .cfgHead{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px}.cfgTitle{font-weight:700;font-size:13px;color:#18202b}.field{margin-bottom:10px}.field label{display:block;font-size:11px;font-weight:650;color:#596579;margin-bottom:4px}.row{display:flex;gap:6px;align-items:center}.inp{width:100%;border:1px solid rgba(185,196,210,.9);background:rgba(255,255,255,.78);color:#18202b;border-radius:8px;padding:7px 9px;font:inherit;font-size:12px}.inp:focus{outline:2px solid rgba(37,99,235,.35);border-color:#2563eb}.hint{font-size:11px;color:#647084;margin-top:3px}.msg{font-size:12px;border-radius:8px;padding:8px 10px;margin-top:8px}.msg.ok{background:rgba(240,253,244,.8);color:#166534;border:1px solid rgba(187,247,208,.9)}.msg.err{background:rgba(255,241,240,.8);color:#8f211b;border:1px solid rgba(255,209,204,.9)}@media(max-width:440px){.panel{width:calc(100vw - 24px);max-height:70vh}}
     </style><section class="panel"><header class="head"><span aria-hidden="true">✦</span><span class="brand">Ask Gemini AutoScan</span><button class="btn" id="min" title="Minimize">−</button><button class="btn" id="close" title="Close">×</button></header><div class="body"><div id="scanView"><div class="status"><span class="dot" id="dot"></span><span id="status">Ready to scan</span></div><div id="results"></div><div id="err" class="error hidden"></div><label style="display:flex;gap:7px;align-items:center;margin-top:12px;font-size:12px;color:#596579"><input id="firstOnly" type="checkbox"> Answer only the first detected question</label><div class="actions"><button class="btn primary" id="copy">Copy Answer</button><button class="btn" id="again">Scan Again</button><button class="btn primary hidden" id="retry">Retry</button></div></div><div id="settingsView" class="hidden"><div class="cfgHead"><span class="cfgTitle">Server Settings</span><button class="btn" id="cfgBack" type="button">← Back</button></div><div class="status" style="margin-bottom:10px"><span class="dot" id="cfgDot"></span><span id="cfgStatus">Checking server…</span></div><div class="field"><label for="cfgUrl">Backend Server URL (Local or Cloud)</label><div class="row"><input class="inp" id="cfgUrl" type="url" placeholder="https://server-pi-beryl-64.vercel.app or http://127.0.0.1:3037"><button class="btn" id="cfgTest" type="button">Test</button></div></div><div class="field"><label for="cfgModel">Gemini Model</label><input class="inp" id="cfgModel" type="text" list="cfgModels" placeholder="gemini-3.6-flash"><datalist id="cfgModels"><option value="gemini-3.6-flash"></option><option value="gemini-3.8-flash"></option><option value="gemini-flash-lite-latest"></option><option value="gemini-2.5-pro"></option></datalist></div><div class="field"><label for="cfgKey">Gemini API Key (optional update)</label><input class="inp" id="cfgKey" type="password" placeholder="Leave blank to keep existing key" autocomplete="off"><div class="hint" id="cfgKeyHint">Stored only on your local server (.env)</div></div><div class="actions"><button class="btn primary" id="cfgSave" type="button">Save Settings</button><button class="btn" id="cfgReset" type="button">Reset URL</button></div><div id="cfgMsg" class="msg hidden"></div></div><div class="footRow"><span>Screen processed safely.</span><button class="linkBtn" id="settingsBtn" type="button" title="Configure local server, model, and API key">⚙ Server Settings</button></div></div></section>`;
     document.documentElement.appendChild(host);
-    $("#close").addEventListener("click", () => { host.remove(); host = null; settingsOpen = false; });
+    $("#close").addEventListener("click", () => { host.remove(); host = null; settingsOpen = false; panelHidden = true; });
     $("#min").addEventListener("click", () => { minimized = !minimized; $(".panel").classList.toggle("collapsed", minimized); $("#min").textContent = minimized ? "□" : "−"; });
     $("#again").addEventListener("click", () => requestScan());
     $("#retry").addEventListener("click", () => requestScan());
@@ -27,6 +27,13 @@
     $("#cfgTest").addEventListener("click", () => testServerConnection());
     $("#cfgSave").addEventListener("click", () => saveServerSettings());
     $("#cfgReset").addEventListener("click", () => { $("#cfgUrl").value = "http://127.0.0.1:3037"; void testServerConnection(); });
+    $("#cfgUrl").addEventListener("input", () => {
+      const val = $("#cfgUrl").value.trim();
+      if (val.startsWith("http://127.0.0.1") || val.startsWith("http://localhost")) {
+        $("#cfgModel").disabled = false;
+        $("#cfgKey").disabled = false;
+      }
+    });
     const head = $(".head"); let drag = null;
     head.addEventListener("pointerdown", e => { if (e.target.closest("button")) return; const r=host.getBoundingClientRect(); drag={x:e.clientX-r.left,y:e.clientY-r.top}; head.setPointerCapture(e.pointerId); });
     head.addEventListener("pointermove", e => { if(!drag)return; host.style.left=Math.max(0,Math.min(innerWidth-host.offsetWidth,e.clientX-drag.x))+"px"; host.style.top=Math.max(0,Math.min(innerHeight-45,e.clientY-drag.y))+"px"; host.style.right="auto"; host.style.bottom="auto"; });
@@ -148,7 +155,11 @@
   // Ctrl+Shift+Q hides/shows only the extension's own host element.
   // It never changes visibility or styles of the webpage or its MCQ content.
   function togglePanelVisibility() {
-    ensurePanel();
+    if (!host?.isConnected) {
+      panelHidden = false;
+      ensurePanel();
+      return;
+    }
     panelHidden = !panelHidden;
     host.style.display = panelHidden ? "none" : "block";
   }
@@ -176,7 +187,7 @@
       const data = await chrome.runtime.sendMessage({type:"AUTOSCAN_PROCESS", server:currentServer, image:screenshot, domText, firstOnly:$("#firstOnly").checked});
       if(!data?.ok) throw new Error(data?.error || "Backend request failed.");
       render(data.result);
-    } catch(e) { showError(e.name==="AbortError"?"Request timed out after 90 seconds. Check the local server and retry.":(e.message.includes("Failed to fetch")?"Cannot reach the local backend at 127.0.0.1:3037. Start the server with npm start in the server folder, then retry.":e.message||"Unexpected scan error.")); }
+    } catch(e) { showError(e.name==="AbortError"?"Request timed out after 90 seconds. Check the server and retry.":(e.message.includes("Failed to fetch")?`Cannot reach backend at ${currentServer}. Check Server Settings or start the local server, then retry.`:e.message||"Unexpected scan error.")); }
   }
   function extractRelevantDomText() {
     try { const nodes=[...document.querySelectorAll("h1,h2,h3,p,label,li,[role=question],.question,[class*=question i],input[type=radio],input[type=checkbox]")]; return nodes.map(n=>{if(n.matches("input"))return n.labels?.[0]?.innerText||n.getAttribute("aria-label")||"";return n.innerText||n.textContent||"";}).map(s=>s.trim()).filter(s=>s.length>2&&s.length<1200).slice(0,100).join("\n").slice(0,12000); } catch{return "";}
