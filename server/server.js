@@ -46,7 +46,7 @@ const DEFAULT_FALLBACK_MODELS = [
   "gemini-3.6-flash",
   "gemini-flash-latest"
 ];
-const MODEL_TIMEOUT_MS = 10000;
+const MODEL_TIMEOUT_MS = 8000;
 
 function getCandidateModels() {
   return [currentModelName, ...DEFAULT_FALLBACK_MODELS]

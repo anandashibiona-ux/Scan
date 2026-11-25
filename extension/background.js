@@ -1,4 +1,4 @@
-const DEFAULT_SERVER = "http://127.0.0.1:3037";
+const DEFAULT_SERVER = "https://scan-lime.vercel.app";
 const runningTabs = new Set();
 
 function normalizeServerUrl(raw) {
@@ -71,8 +71,8 @@ async function startScan() {
     if (runningTabs.has(tab.id)) return;
     runningTabs.add(tab.id);
 
-    // Capture first while the target tab is still active; never send this image to Gemini.
-    const screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
+    // Capture first while the target tab is still active; JPEG keeps cloud uploads fast.
+    const screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "jpeg", quality: 85 });
     try {
       await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"] });
     } catch (e) {
@@ -104,7 +104,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       try {
         const tab = sender.tab;
         if (!tab?.id || !tab.windowId) throw new Error("The active tab is unavailable. Press Alt+X again.");
-        const screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
+        const screenshot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "jpeg", quality: 85 });
         sendResponse({ screenshot });
       } catch (e) { sendResponse({ error: e?.message || "Screenshot capture failed." }); }
     })();

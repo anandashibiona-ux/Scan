@@ -116,7 +116,7 @@ scanBtn.addEventListener("click", async () => {
     );
     const image = crop.toDataURL("image/png");
     const stored = await chrome.storage.local.get(["serverUrl"]).catch(() => ({}));
-    const serverUrl = (stored?.serverUrl || "http://127.0.0.1:3037").replace(/\/+$/, "");
+    const serverUrl = (stored?.serverUrl || "https://scan-lime.vercel.app").replace(/\/+$/, "");
     const response = await fetch(`${serverUrl}/api/scan`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -129,7 +129,7 @@ scanBtn.addEventListener("click", async () => {
     setStatus("Done.");
   } catch (error) {
     answerText.textContent = "";
-    setStatus(`Error: ${error.message}. Make sure the local server is running at http://127.0.0.1:3037.`);
+    setStatus(`Error: ${error.message}. Check your backend server in Server Settings.`);
   } finally {
     scanBtn.disabled = false;
   }
