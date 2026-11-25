@@ -205,6 +205,50 @@
       render(data.result);
     } catch(e) { showError(e.name==="AbortError"?"Request timed out after 90 seconds. Check the server and retry.":(e.message.includes("Failed to fetch")?`Cannot reach backend at ${currentServer}. Check Server Settings or start the local server, then retry.`:e.message||"Unexpected scan error.")); }
   }
+  function extractCodeContext() {
+    try {
+      const blocks = [];
+      const seen = new Set();
+      const addBlock = (raw) => {
+        const cleaned = (raw || "").replace(/\u00a0/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+        if (cleaned.length >= 12 && cleaned.length <= 5000 && !seen.has(cleaned)) {
+          seen.add(cleaned);
+          blocks.push(cleaned);
+        }
+      };
+
+      for (const container of document.querySelectorAll(".ace_text-layer, .cm-content, .CodeMirror-code, .view-lines")) {
+        if (container.closest("#ask-gemini-autoscan-host")) continue;
+        const lineNodes = container.querySelectorAll(".ace_line, .cm-line, .CodeMirror-line, .view-line");
+        const text = lineNodes.length
+          ? [...lineNodes].map(n => n.textContent || "").join("\n")
+          : (container.innerText || container.textContent || "");
+        addBlock(text);
+      }
+
+      for (const pre of document.querySelectorAll("pre, code")) {
+        if (pre.closest("#ask-gemini-autoscan-host, .ace_text-layer, .cm-content, .CodeMirror-code, .view-lines")) continue;
+        if (pre.tagName === "CODE" && pre.closest("pre")) continue;
+        const text = (pre.innerText || pre.textContent || "").trim();
+        if (pre.tagName === "PRE" || text.includes("\n") || /[{}();]/.test(text)) addBlock(text);
+      }
+
+      const currentCode = blocks.join("\n\n").slice(0, 5000);
+      const cacheKey = `askGeminiLastCode:${location.pathname}`;
+      if (currentCode) {
+        try { sessionStorage.setItem(cacheKey, currentCode); } catch {}
+        return `VISIBLE_OR_DOM_CODE:\n${currentCode}`;
+      }
+      try {
+        const cached = sessionStorage.getItem(cacheKey) || "";
+        if (cached) {
+          return `PREVIOUS_QUIZ_CODE (from an earlier screen of this quiz; ONLY use if the current question refers to "the provided implementation/code" and no code is visible now):\n${cached}`;
+        }
+      } catch {}
+      return "";
+    } catch { return ""; }
+  }
+
   function extractRelevantDomText() {
     try {
       const nodes = [...document.querySelectorAll("h1,h2,h3,p,label,li,[role=question],[role=option],[role=listitem],[role=checkbox],[role=radio],[draggable=true],[data-rbd-draggable-id],.question,[class*=question i],[class*=option i],[class*=choice i],[class*=step i],[class*=prompt i],[class*=statement i],input[type=radio],input[type=checkbox]")];
@@ -219,6 +263,8 @@
           if (lines.length >= 120) break;
         }
       }
+      const codeSection = extractCodeContext();
+      if (codeSection) lines.push(codeSection);
       return lines.join("\n").slice(0, 12000);
     } catch { return ""; }
   }
