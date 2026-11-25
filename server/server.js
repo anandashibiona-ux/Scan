@@ -33,10 +33,9 @@ app.use(cors({
 app.use(express.json({ limit: "10mb" }));
 
 let genAI = currentApiKey && !currentApiKey.includes("PASTE_YOUR") ? new GoogleGenerativeAI(currentApiKey) : null;
-const ocrOptions = isVercel ? { cachePath: "/tmp", dataPath: "/tmp" } : { cachePath: __dirname };
 
-async function runOcr(imageBuffer) {
-  const { data } = await Tesseract.recognize(imageBuffer, "eng", ocrOptions);
+async function runLocalOcr(imageBuffer) {
+  const { data } = await Tesseract.recognize(imageBuffer, "eng", { cachePath: __dirname });
   return (data.text || "").trim();
 }
 const DEFAULT_FALLBACK_MODELS = [
@@ -176,29 +175,49 @@ app.post("/api/scan", async (req, res) => {
       return res.status(413).json({ error: "Selected region is too large. Select a smaller area." });
     }
 
-    // OCR runs locally on this computer using Tesseract.js (English language data).
-    const extractedText = await runOcr(imageBuffer);
-    if (!extractedText) {
-      return res.status(422).json({
-        error: "OCR could not read text in this region. Try selecting a larger, sharper area."
-      });
+    if (!isVercel) {
+      // OCR runs locally on this computer using Tesseract.js (English language data).
+      const extractedText = await runLocalOcr(imageBuffer);
+      if (!extractedText) {
+        return res.status(422).json({
+          error: "OCR could not read text in this region. Try selecting a larger, sharper area."
+        });
+      }
+
+      const prompt = [
+        "You are Ask Gemini, a helpful study assistant.",
+        "Answer the question extracted from a screenshot.",
+        "If it is a multiple-choice question, identify the correct option and explain briefly.",
+        "If OCR contains obvious recognition errors, infer cautiously from context.",
+        "If the question is incomplete or unreadable, say what is missing instead of inventing details.",
+        "Give a clear, direct answer followed by a short explanation when useful.",
+        "",
+        "OCR-extracted question:",
+        extractedText
+      ].join("\n");
+
+      const result = await generateWithFallback(prompt);
+      const answer = result.response.text();
+      return res.json({ extractedText, answer });
     }
 
-    const prompt = [
+    const cloudPrompt = [
       "You are Ask Gemini, a helpful study assistant.",
-      "Answer the question extracted from a screenshot.",
+      "Read and answer the question shown in this screenshot.",
       "If it is a multiple-choice question, identify the correct option and explain briefly.",
-      "If OCR contains obvious recognition errors, infer cautiously from context.",
       "If the question is incomplete or unreadable, say what is missing instead of inventing details.",
-      "Give a clear, direct answer followed by a short explanation when useful.",
-      "",
-      "OCR-extracted question:",
-      extractedText
+      "Give a clear, direct answer followed by a short explanation when useful."
     ].join("\n");
-
-    const result = await generateWithFallback(prompt);
-    const answer = result.response.text();
-    return res.json({ extractedText, answer });
+    const result = await generateWithFallback({
+      contents: [{
+        role: "user",
+        parts: [
+          { text: cloudPrompt },
+          { inlineData: { mimeType, data: match[2] } }
+        ]
+      }]
+    });
+    return res.json({ extractedText: "", answer: result.response.text() });
   } catch (error) {
     console.error("Scan request failed:", error?.message || error);
     return res.status(500).json({
@@ -215,36 +234,67 @@ app.post("/api/autoscan", async (req, res) => {
       return res.status(400).json({ error: "A valid PNG/JPEG screenshot is required. Press Ctrl+Shift+Q and retry." });
     }
     const match = imageData.match(/^data:image\/(png|jpeg|jpg|webp);base64,([A-Za-z0-9+/=]+)$/);
+    const mimeType = match[1] === "jpg" ? "image/jpeg" : `image/${match[1]}`;
     const imageBuffer = Buffer.from(match[2], "base64");
     if (imageBuffer.length > 6 * 1024 * 1024) return res.status(413).json({ error: "Screenshot is too large. Zoom out or reduce the browser window size, then retry." });
 
-    // Tesseract OCR runs on the server without sending the screenshot to Gemini.
-    const ocrText = (await runOcr(imageBuffer)).slice(0, 14000);
     const domText = typeof req.body?.domText === "string" ? req.body.domText.slice(0, 12000).trim() : "";
-    if (!ocrText && !domText) return res.status(422).json({ error: "No readable text found. Make the question larger and clearer, then scan again." });
+    const ocrText = !isVercel ? (await runLocalOcr(imageBuffer)).slice(0, 14000) : "";
+    if (!isVercel && !ocrText && !domText) return res.status(422).json({ error: "No readable text found. Make the question larger and clearer, then scan again." });
 
-    const prompt = `You are Ask Gemini AutoScan, a careful study assistant. Extract the visible questions from the supplied OCR and optional accessible webpage text. Use only questions and nearby answer options; ignore navigation, ads, unrelated paragraphs, and page boilerplate. Preserve the original question order. If the user asks for firstOnly, return only the first question. Do not guess missing or unreadable text; say when something is unclear. For each question provide question, options (array of strings), answer, and explanation (brief). For multiple choice, identify the option letter and its text when available. Return valid JSON only, exactly this schema: {"questions":[{"question":"...","options":["A. ..."],"answer":"...","explanation":"..."}]}. If no question is detected, return {"questions":[]}.\nfirstOnly: ${Boolean(req.body?.firstOnly)}\nOCR_TEXT:\n${ocrText}\nACCESSIBLE_DOM_TEXT (secondary evidence; prefer visible question context):\n${domText}`;
-    const result = await generateWithFallback({
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      generationConfig: { responseMimeType: "application/json", temperature: 0.2 }
-    });
-    let parsed;
-    try {
-      const raw = result.response.text().trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
-      parsed = JSON.parse(raw);
-    } catch {
-      return res.status(502).json({ error: "Gemini returned an unreadable answer. Press Retry to try again." });
+    const parseQuestions = (result) => {
+      let parsed;
+      try {
+        const raw = result.response.text().trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+        parsed = JSON.parse(raw);
+      } catch {
+        const err = new Error("Gemini returned an unreadable answer. Press Retry to try again.");
+        err.statusCode = 502;
+        throw err;
+      }
+      if (!Array.isArray(parsed.questions)) {
+        const err = new Error("Gemini response did not contain a questions list. Retry the scan.");
+        err.statusCode = 502;
+        throw err;
+      }
+      return parsed.questions.slice(0, req.body?.firstOnly ? 1 : 20).map(q => ({
+        question: String(q?.question || "Question not clearly detected").slice(0, 3000),
+        options: Array.isArray(q?.options) ? q.options.slice(0, 12).map(o => String(o).slice(0, 500)) : [],
+        answer: String(q?.answer || "No reliable answer returned.").slice(0, 4000),
+        explanation: String(q?.explanation || "").slice(0, 4000)
+      }));
+    };
+
+    let questions = [];
+    if (ocrText || domText) {
+      const textPrompt = `You are Ask Gemini AutoScan, a careful study assistant. Extract the visible questions from the supplied OCR and optional accessible webpage text. Use only questions and nearby answer options; ignore navigation, ads, unrelated paragraphs, and page boilerplate. Preserve the original question order. If the user asks for firstOnly, return only the first question. Do not guess missing or unreadable text; say when something is unclear. For each question provide question, options (array of strings), answer, and explanation (brief). For multiple choice, identify the option letter and its text when available. Return valid JSON only, exactly this schema: {"questions":[{"question":"...","options":["A. ..."],"answer":"...","explanation":"..."}]}. If no question is detected, return {"questions":[]}.\nfirstOnly: ${Boolean(req.body?.firstOnly)}\nOCR_TEXT:\n${ocrText}\nACCESSIBLE_DOM_TEXT (secondary evidence; prefer visible question context):\n${domText}`;
+      const result = await generateWithFallback({
+        contents: [{ role: "user", parts: [{ text: textPrompt }] }],
+        generationConfig: { responseMimeType: "application/json", temperature: 0.2 }
+      });
+      questions = parseQuestions(result);
     }
-    if (!Array.isArray(parsed.questions)) return res.status(502).json({ error: "Gemini response did not contain a questions list. Retry the scan." });
-    const questions = parsed.questions.slice(0, req.body?.firstOnly ? 1 : 20).map(q => ({
-      question: String(q?.question || "Question not clearly detected").slice(0, 3000),
-      options: Array.isArray(q?.options) ? q.options.slice(0, 12).map(o => String(o).slice(0, 500)) : [],
-      answer: String(q?.answer || "No reliable answer returned.").slice(0, 4000),
-      explanation: String(q?.explanation || "").slice(0, 4000)
-    }));
+
+    // On Vercel serverless, fall back to screenshot vision if DOM text alone yielded no questions.
+    if (isVercel && !questions.length) {
+      const visionPrompt = `You are Ask Gemini AutoScan, a careful study assistant. Read the visible questions and answer options from the supplied webpage screenshot. Ignore navigation, ads, unrelated paragraphs, and browser UI. Preserve the original question order. If firstOnly is true, return only the first question. Do not guess unreadable text; say when something is unclear. For each question provide question, options (array of strings), answer, and explanation (brief). Return valid JSON only, exactly this schema: {"questions":[{"question":"...","options":["A. ..."],"answer":"...","explanation":"..."}]}. If no question is detected, return {"questions":[]}.\nfirstOnly: ${Boolean(req.body?.firstOnly)}`;
+      const result = await generateWithFallback({
+        contents: [{
+          role: "user",
+          parts: [
+            { text: visionPrompt },
+            { inlineData: { mimeType, data: match[2] } }
+          ]
+        }],
+        generationConfig: { responseMimeType: "application/json", temperature: 0.2 }
+      });
+      questions = parseQuestions(result);
+    }
+
     if (!questions.length) return res.status(422).json({ error: "Text was detected, but no question could be identified. Scroll the question fully into view and retry." });
     return res.json({ questions, ocrText });
   } catch (error) {
+    if (error?.statusCode === 502) return res.status(502).json({ error: error.message });
     const message = String(error?.message || "");
     console.error("AutoScan request failed:", message);
     if (/503|service unavailable|high demand/i.test(message)) return res.status(503).json({ error: "Gemini is temporarily experiencing high demand. Press Retry in a moment." });
